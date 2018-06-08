@@ -5,15 +5,21 @@ class WoooshGetter
 require 'fileutils'
 require 'net/ftp'
 
-attr_accessor :arch, :dest, :ftp, :options, :snapshots, :version
+attr_accessor :arch, :dest, :freebsds, :ftp, :options, :path, :snapshots, :version
 
 def initialize(options)
 	@arch = %x[uname -m].chomp
-	@version = %x[uname -r].chomp
+	@version = (options[:freebsd])
 
 	@options = options.clone
 
 	login
+	@path = "/pub/FreeBSD/snapshots/#{ @arch }"
+	@ftp.chdir(@path)
+
+	get_freebsds
+	@path += "/#{ @version }"
+	@ftp.chdir(@path)
 
 	# build a list of the snapshots, set them to false so they're not 
 	# included by default.
@@ -40,17 +46,37 @@ def initialize(options)
 	@snapshots['base'] = true
 
 	# Make sure the path to the dest exists
-	@dest = @options[:dest]
+	@dest = @options[:dest].chomp("/")
 	FileUtils.mkdir_p(@dest)
-
 
 	self
 end
 
 def login
 	@ftp = Net::FTP.new("ftp.freebsd.org")
-	@ftp.login
-	@ftp.chdir("pub/FreeBSD/snapshots/#{ @arch }/#{ @version }")
+	@ftp.login("anonymous", "")
+end
+
+def get_freebsds
+	@freebsds = {}
+	@ftp.nlst.each do |freebsd|
+		if freebsd == @arch then next end
+		@freebsds[freebsd] = true
+	end
+
+	if not @freebsds[@version] then
+		$stderr.puts "'#{ @version or '(not set)' }' does not exist on the FTP server."
+		$stderr.puts "\tOptions are #{ @freebsds.keys.to_s }"
+		abort
+	end
+end
+
+def update
+	%x[freebsd-update -b #{ @dest } fetch install]
+
+	puts "wooosh: updating snapshot at '#{ @dest }'"
+
+	self
 end
 
 def close
@@ -61,7 +87,7 @@ def cp_resolv
 	etc_path = "#{ @dest }/etc"
 	resolv_path = "#{ etc_path }/resolv.conf"
 	FileUtils.mkdir_p(resolv_path)
-	puts "Copying '/etc/resolv.conf' to '#{ etc_path  }'"
+	puts "wooosh: copying '/etc/resolv.conf' to '#{ etc_path  }'"
 	FileUtils.cp("/etc/resolv.conf", "#{ resolv_path }")
 
 	self
@@ -69,6 +95,8 @@ end
 
 def download
 	login
+
+	@ftp.chdir(@path)
 
 	@snapshots.keys.each do |snapshot|
 		if @snapshots[snapshot] then
